@@ -15,6 +15,7 @@ from paths import WORKSPACE, CODE_ROOT
 from agent_events import now, record_event, redact, set_activity, summarize_codex_event
 from codex_profile import label as model_label, resolve_profile
 from issue_classifier import classify_issue
+from instance_connections import safe_connection_context
 
 ROOT = WORKSPACE
 DETAILS = ROOT / "data" / "raw" / "challenge_details.json"
@@ -124,7 +125,7 @@ def prompt_for(challenge, index, attempt_no=1, previous_text="", previous_flags=
     previous_flags = previous_flags or []
     specialist = specialist_for(challenge)
     lens = reanalysis_lens(attempt_no)
-    instances = (ROOT / "data" / "raw" / "instances.json").read_text(errors="replace")[-6000:] if (ROOT / "data" / "raw" / "instances.json").exists() else "No instance data."
+    connection_context = safe_connection_context(challenge.get("id"))
     return f"""You are a fast CTF specialist investigating one authorized challenge.
 Challenge ID: {challenge.get('id')}
 Name: {challenge.get('name')}
@@ -134,8 +135,8 @@ Value: {challenge.get('value')} / solves: {challenge.get('solves')}
 Description:
 {challenge.get('description', '')}
 Attachments listed by the portal: {json.dumps(files)}
-Instance status/connection data (if any):
-{instances}
+Instance status/connection data (secrets redacted):
+{connection_context}
 Prior worker knowledge (use as hypotheses, not facts):
 {learned}
 Reanalysis round: {attempt_no}
@@ -145,9 +146,22 @@ Previous attempt evidence (do not blindly repeat it; improve or falsify it):
 {previous}
 Previous candidate flags are hard exclusions for this reanalysis:
 {json.dumps(previous_flags, ensure_ascii=False) if previous_flags else "[]"}
-If the challenge has connection_info, use only that declared HTTPS host. CTF
-tokens may be supplied through environment variables or an approved local
-session helper; never print tokens in reports.
+If the portal or runtime instance data provides connection information, use
+only that exact declared protocol, host, port, and user. It may be HTTP,
+HTTPS, SSH, or another explicitly declared CTF endpoint. For SSH, use only
+the supplied command/host/port/user; never scan alternate hosts or ports.
+Credentials and CTF tokens may be supplied through the challenge text,
+environment variables, or an approved local session helper; never print
+passwords, tokens, cookies, or authorization headers in reports.
+
+For a declared SSH instance, first verify the exact endpoint with a bounded
+connection attempt. Prefer noninteractive SSH options and a local approved
+helper when a challenge password is explicitly provided. The approved helper
+for this workspace is:
+`python3 {CODE_ROOT}/scripts/instance_ssh.py {challenge.get('id')} -- <remote command>`
+It validates the declared endpoint and keeps the password out of argv. If the
+portal did not return an endpoint, do not guess one: report `instance endpoint
+missing` and leave the challenge eligible for automatic instance retry.
 
 Work only inside the local workspace and only on this challenge's downloaded
 files under data/files/{challenge.get('id')}. Use installed read-only tools and

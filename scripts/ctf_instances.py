@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Manage authorized CTFd-Chall-Manager player instances."""
-import argparse, getpass, json, os, re, urllib.error, urllib.parse, urllib.request
+import argparse, datetime, getpass, json, os, re, tempfile, urllib.error, urllib.parse, urllib.request
 from http.cookiejar import CookieJar
 from pathlib import Path
 from paths import WORKSPACE
@@ -11,6 +11,31 @@ PASSWORD = os.environ.get("CTF_PASSWORD")
 ROOT = WORKSPACE
 OUT = ROOT / "data/raw/instances.json"
 API = BASE + "/api/v1/plugins/ctfd-chall-manager/instance"
+
+
+def payload_data(payload):
+    """Accept both CTFd {data: {...}} and direct instance responses."""
+    if not isinstance(payload, dict):
+        return {"response": payload}
+    nested = payload.get("data")
+    return nested if isinstance(nested, dict) else payload
+
+
+def save_result(result):
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".instances.", suffix=".tmp", dir=str(OUT.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(result, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, OUT)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 def main():
     ap = argparse.ArgumentParser()
@@ -36,21 +61,45 @@ def main():
     login = urllib.request.Request(BASE + "/login", data=urllib.parse.urlencode(fields).encode(), headers={"User-Agent":"NiceTop-CTF-Autopilot/1.0"})
     with opener.open(login, timeout=30) as r: final = r.geturl()
     if final.endswith("/login"): raise SystemExit("CTF login failed")
-    result = json.loads(OUT.read_text()) if OUT.exists() else {}
+    try:
+        result = json.loads(OUT.read_text()) if OUT.exists() else {}
+    except (OSError, ValueError):
+        result = {}
+    if not isinstance(result, dict):
+        result = {}
+    failures = 0
     for challenge in targets:
         cid = challenge["id"]
         try:
             if args.destroy:
-                code, data = request("DELETE", API, {"challengeId": cid}); result.pop(str(cid), None)
+                code, data = request("DELETE", API, {"challengeId": cid})
+                result.pop(str(cid), None)
             else:
                 try: code, data = request("GET", API + "?challengeId=" + str(cid))
                 except urllib.error.HTTPError as e:
                     if e.code != 404: raise
                     code, data = request("POST", API, {"challengeId": cid})
-                result[str(cid)] = {"title": challenge.get("name"), **data.get("data", {})}
+                # Keep the complete portal response under a challenge key so
+                # connection_info/ssh/host fields survive API shape changes.
+                result[str(cid)] = {
+                    "title": challenge.get("name"),
+                    "challenge_id": cid,
+                    "http_status": code,
+                    "updated_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+                    **payload_data(data),
+                }
+            save_result(result)
             print(f"[인스턴스] {challenge.get('name')}: HTTP {code}", flush=True)
         except Exception as exc:
+            failures += 1
+            result[str(cid)] = {
+                "title": challenge.get("name"),
+                "challenge_id": cid,
+                "status": "error",
+                "error": str(exc)[:300],
+            }
+            save_result(result)
             print(f"[인스턴스 실패] {challenge.get('name')}: {exc}", flush=True)
-    OUT.parent.mkdir(parents=True, exist_ok=True); OUT.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+    return 1 if failures else 0
 
-if __name__ == "__main__": main()
+if __name__ == "__main__": raise SystemExit(main())

@@ -9,18 +9,25 @@ import urllib.request
 from http.cookiejar import CookieJar
 from pathlib import Path
 from paths import WORKSPACE
+from instance_connections import endpoint_hosts
 
 ROOT = WORKSPACE
 DETAILS = ROOT / "data" / "raw" / "challenge_details.json"
 
 
 def challenge_hosts(challenge_id):
+    allowed = endpoint_hosts(challenge_id, schemes=("http", "https"))
     details = json.loads(DETAILS.read_text())
     for c in details:
         if c.get("id") == challenge_id:
             text = (c.get("connection_info") or "") + " " + (c.get("description") or "")
-            return {urllib.parse.urlsplit(x).netloc for x in re.findall(r"https?://[^\s<>\"']+", text) if urllib.parse.urlsplit(x).netloc}
-    return set()
+            allowed.update(
+                urllib.parse.urlsplit(x).netloc
+                for x in re.findall(r"https?://[^\s<>\"']+", text)
+                if urllib.parse.urlsplit(x).netloc
+            )
+            break
+    return allowed
 
 
 def main():
@@ -35,8 +42,8 @@ def main():
     args = ap.parse_args()
     parsed = urllib.parse.urlsplit(args.url)
     allowed = challenge_hosts(args.challenge_id)
-    if parsed.scheme != "https" or parsed.netloc not in allowed:
-        raise SystemExit(f"Blocked host. Allowed HTTPS hosts for challenge: {sorted(allowed)}")
+    if parsed.scheme not in ("http", "https") or parsed.netloc not in allowed:
+        raise SystemExit(f"Blocked host. Allowed declared HTTP(S) hosts for challenge: {sorted(allowed)}")
     token = os.environ.get(args.token_env) if args.token_env else None
     form = dict(item.split("=", 1) for item in args.data if "=" in item)
     headers = {"User-Agent": "ctf-rapid-workbench/1.0"}

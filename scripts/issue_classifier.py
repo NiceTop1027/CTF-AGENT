@@ -43,12 +43,20 @@ def classify_issue(*parts):
 
     if any(term in text for term in (
         "mana used", "quota", "no instance is running", "instance state",
-        "launch request", "target host", "connection info",
+        "launch request", "target host", "connection info", "instance endpoint",
+        "no declared instance", "instance is not ready", "instance unavailable",
     )) and any(term in text for term in ("403", "empty", "unavailable", "none", "no ")):
         return {
             "kind": "infrastructure",
             "label": "인프라 오류 · 인스턴스/쿼터",
             "action": "인스턴스·쿼터 상태를 확인하고 잠시 후 재시도",
+        }
+
+    if "instance endpoint missing" in text or "no declared instance endpoint" in text:
+        return {
+            "kind": "infrastructure",
+            "label": "인프라 오류 · 인스턴스/쿼터",
+            "action": "인스턴스 연결 정보가 생길 때까지 자동 재시도합니다",
         }
 
     if re.search(r"\b(?:http|status|error)\s*4(?:0[13]|29)\b|\b403\b|forbidden|unauthorized", text):

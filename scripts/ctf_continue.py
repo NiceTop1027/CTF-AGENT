@@ -17,6 +17,8 @@ from pathlib import Path
 from paths import WORKSPACE, CODE_ROOT
 from codex_profile import label as model_label
 from issue_classifier import classify_issue
+from agent_events import record_event
+from instance_connections import declared_endpoints
 
 ROOT = WORKSPACE
 SCRIPTS = CODE_ROOT / "scripts"
@@ -148,6 +150,28 @@ def run_one(challenge, env):
                 print(instance.stdout, end="", flush=True)
             if instance.stderr:
                 print(instance.stderr[-800:], flush=True)
+            endpoints = declared_endpoints(cid)
+            if not endpoints:
+                # Do not launch Codex with an empty target. This used to look
+                # like a failed solve and was incorrectly presented as a
+                # final “give up”. Keep it in the queue as a recoverable
+                # instance/infrastructure state instead.
+                message = "인스턴스 연결 정보가 없습니다 · 인스턴스 시작/쿼터 응답을 기다리는 중"
+                record_event(cid, challenge.get("name"), "인스턴스", message, "failed", "instance.missing")
+                metadata = {
+                    "id": challenge.get("id"),
+                    "name": challenge.get("name"),
+                    "returncode": 75,
+                    "failure_kind": "infrastructure",
+                    "issue_kind": "infrastructure",
+                    "issue_label": "인프라 오류 · 인스턴스/쿼터",
+                    "next_action": "인스턴스 시작 요청을 재시도하고 연결 정보가 생기면 SSH 워커를 시작",
+                    "output": str(RUNS / f"challenge-{cid}.jsonl"),
+                }
+                return subprocess.CompletedProcess(
+                    [], 75, stdout=json.dumps(metadata, ensure_ascii=False) + "\n",
+                    stderr="instance endpoint missing\n",
+                )
         return call([PYTHON, str(SCRIPTS / "codex_ctf_workers.py"), "--ids", cid, "--workers", "1"], env)
 
 
@@ -319,7 +343,7 @@ def main():
                 live_item["status"] = f"오류 재시도 대기 ({retries + 1}/{max_session_retries})"
                 print(f"[자동 재시도] {challenge.get('name')} · {retries + 1}/{max_session_retries}", flush=True)
             elif result.returncode:
-                live_item["status"] = "오류·이번 세션 한도 초과"
+                live_item["status"] = f"{issue_label or '재시도 필요'} · 다음 실행에서 계속"
             elif not found and retries < max_session_retries:
                 # A clean Codex exit without a candidate is not success. Give
                 # the challenge another independent lens in this same run.
@@ -331,7 +355,7 @@ def main():
                 live_item["status"] = "새 플래그 후보" if found else "재탐색 완료·새 후보 없음"
                 live_item["flags"] = merged_flags
             else:
-                live_item["status"] = "플래그 발견" if found else "보류"
+                live_item["status"] = "플래그 후보" if found else "새 후보 없음 · 다음 실행에서 계속"
                 live_item["flags"] = found
             if result.returncode or not found:
                 live_item["flags"] = merged_flags if is_reanalysis else (found or old_flags)
