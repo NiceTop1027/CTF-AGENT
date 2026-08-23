@@ -219,7 +219,7 @@ def learn_and_publish(challenge, env):
         for flag in flags:
             print(flag, flush=True)
     else:
-        print("[보류] 새 플래그 후보가 없어 다른 전략으로 다시 시도할 수 있습니다.", flush=True)
+        print("[계속] 새 플래그 후보 없음 · 다음 전략으로 재시도 예약", flush=True)
     return flags, repeated_flags, is_reanalysis, issue
 
 
