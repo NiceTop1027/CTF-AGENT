@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+CODE_ROOT="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+WORK_ROOT="${CTF_WORKSPACES_ROOT:-$HOME/ctf-workspaces}"
+
+usage() {
+  echo "사용법:"
+  echo "  ctf start [이름|절대경로]         # 새 CTF 연결·분석·풀이 시작"
+  echo "  ctf continue [이름|절대경로]      # 중단 지점부터 계속"
+  echo ""
+  echo "workers 기본값은 3이며 직접 지정할 필요가 없습니다."
+}
+
+resolve_workspace() {
+  local target="$1"
+  case "$target" in
+    /*) printf '%s\n' "$target" ;;
+    .|./*) (cd "$target" 2>/dev/null && pwd) || return 1 ;;
+    *) printf '%s/%s\n' "$WORK_ROOT" "$target" ;;
+  esac
+}
+
+case "${1:-}" in
+  start)
+    target="${2:-}"
+    if [[ "$target" == --* || -z "$target" ]]; then
+      target="$PWD"
+      shift 1
+    else
+      shift 2
+    fi
+    case "$target" in
+      /*) workspace="$target" ;;
+      *) workspace="$(resolve_workspace "$target")" ;;
+    esac
+    mkdir -p "$workspace"
+    export CTF_WORKSPACE="$(cd "$workspace" && pwd)"
+    exec python3 "$CODE_ROOT/scripts/ctf_live.py" "$@"
+    ;;
+  continue)
+    if [[ "${2:-}" == "--help" || "${2:-}" == "-h" ]]; then
+      usage
+      exit 0
+    fi
+    workspace="${2:-$PWD}"
+    if [ -n "${2:-}" ]; then shift 2; else shift 1; fi
+    case "$workspace" in
+      /*) ;;
+      *) workspace="$(resolve_workspace "$workspace")" ;;
+    esac
+    [ -d "$workspace" ] || { echo "작업 폴더가 없습니다: $workspace"; exit 1; }
+    export CTF_WORKSPACE="$(cd "$workspace" && pwd)"
+    exec python3 "$CODE_ROOT/scripts/ctf_live.py" --resume "$@"
+    ;;
+  # 이전 명령은 깨지지 않도록 별칭으로만 남겨 둡니다.
+  run)
+    exec "$0" start "${@:2}"
+    ;;
+  resume)
+    exec "$0" continue "${@:2}"
+    ;;
+  list)
+    mkdir -p "$WORK_ROOT"
+    find "$WORK_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+    ;;
+  flags)
+    export CTF_WORKSPACE="$(pwd)"
+    exec python3 "$CODE_ROOT/scripts/ctf_monitor.py" --once --no-clear
+    ;;
+  retry)
+    [ -n "${2:-}" ] || { echo "사용법: ctf retry <문제 제목>"; exit 2; }
+    export CTF_WORKSPACE="$(pwd)"
+    python3 -c 'import json,sys; from pathlib import Path; p=Path("data/runtime/retry_queue.json"); p.parent.mkdir(parents=True,exist_ok=True); x=json.loads(p.read_text()) if p.exists() else []; title=sys.argv[1]; x.append(title) if title not in x else None; p.write_text(json.dumps(x,ensure_ascii=False,indent=2)+"\\n"); print("재탐색 예약:",title); print("다음 실행: ctf resume")' "$2"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

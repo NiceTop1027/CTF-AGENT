@@ -1,0 +1,10 @@
+.env
+.cookies
+.venv/
+*.py[cod]
+*.swp
+data/raw/
+data/files/
+data/runtime/
+data/logs/
+__pycache__/
