@@ -106,6 +106,21 @@ def save_live(items, overall="실행 중"):
     }, ensure_ascii=False, indent=2) + "\n")
 
 
+def clear_retry_request(title):
+    """Consume a one-shot UI retry request after that challenge finishes."""
+    if not RETRY.exists():
+        return
+    try:
+        values = json.loads(RETRY.read_text())
+        if not isinstance(values, list):
+            return
+        remaining = [value for value in values if value != title]
+        if remaining != values:
+            RETRY.write_text(json.dumps(remaining, ensure_ascii=False, indent=2) + "\n")
+    except (OSError, ValueError):
+        return
+
+
 def refresh(env):
     for cmd in (
         [PYTHON, str(SCRIPTS / "ctf_inventory.py")],
@@ -317,6 +332,7 @@ def main():
                 continue
 
             found, repeated, is_reanalysis, report_issue = learn_and_publish(challenge, env)
+            clear_retry_request(challenge.get("name"))
             if issue_kind == "none":
                 issue_kind = report_issue.get("kind", "none")
                 issue_label = report_issue.get("label", "")
