@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Manage authorized CTFd-Chall-Manager player instances."""
-import argparse, datetime, getpass, json, os, re, tempfile, urllib.error, urllib.parse, urllib.request
+import argparse, datetime, fcntl, getpass, json, os, re, tempfile, urllib.error, urllib.parse, urllib.request
 from http.cookiejar import CookieJar
 from pathlib import Path
 from paths import WORKSPACE
@@ -10,6 +10,7 @@ USER = os.environ.get("CTF_USER")
 PASSWORD = os.environ.get("CTF_PASSWORD")
 ROOT = WORKSPACE
 OUT = ROOT / "data/raw/instances.json"
+LOCK = ROOT / "data/runtime/instances.lock"
 API = BASE + "/api/v1/plugins/ctfd-chall-manager/instance"
 
 
@@ -21,21 +22,36 @@ def payload_data(payload):
     return nested if isinstance(nested, dict) else payload
 
 
-def save_result(result):
+def save_result(result, removed=None):
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".instances.", suffix=".tmp", dir=str(OUT.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(result, stream, ensure_ascii=False, indent=2)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, OUT)
-    finally:
+    LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with LOCK.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+            try:
+                current = json.loads(OUT.read_text()) if OUT.exists() else {}
+            except (OSError, ValueError):
+                current = {}
+            if not isinstance(current, dict):
+                current = {}
+            current.update(result)
+            if removed is not None:
+                current.pop(str(removed), None)
+            fd, temporary = tempfile.mkstemp(prefix=".instances.", suffix=".tmp", dir=str(OUT.parent))
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    json.dump(current, stream, ensure_ascii=False, indent=2)
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, OUT)
+            finally:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -88,7 +104,7 @@ def main():
                     "updated_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
                     **payload_data(data),
                 }
-            save_result(result)
+            save_result({} if args.destroy else {str(cid): result[str(cid)]}, removed=cid if args.destroy else None)
             print(f"[인스턴스] {challenge.get('name')}: HTTP {code}", flush=True)
         except Exception as exc:
             failures += 1
@@ -98,7 +114,7 @@ def main():
                 "status": "error",
                 "error": str(exc)[:300],
             }
-            save_result(result)
+            save_result({str(cid): result[str(cid)]})
             print(f"[인스턴스 실패] {challenge.get('name')}: {exc}", flush=True)
     return 1 if failures else 0
 
